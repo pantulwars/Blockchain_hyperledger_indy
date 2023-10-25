@@ -1,24 +1,20 @@
 import asyncio
 import json
 import time
-from indy import pool, wallet, did, ledger, anoncreds, checker
+from indy import pool, wallet, did, ledger, anoncreds
 from indy.error import IndyError, ErrorCode      
 
 
-async def ensure_previous_request_applied(pool_handle, checker_request, cheker):
+async def ensure_previous_request_applied(pool_handle, checker_request):
     for _ in range(3):
         response = json.loads(await ledger.submit_request(pool_handle, checker_request))
-        try:
-            if checker(response):
-                return json.dumps(response)
-        except TypeError:
-            pass
+        if response.get('op', '') == 'REPLY':
+            return json.dumps(response)
         time.sleep(5)
 
 async def get_cred_def(pool_handle, did, cred_def_id):
     get_cred_def_request = await ledger.build_get_cred_def_request(did, cred_def_id)
-    get_cred_def_response = await ensure_previous_request_applied(pool_handle, get_cred_def_request, 
-                                                                  lambda response: response['result']['data'] is not None)
+    get_cred_def_response = await ensure_previous_request_applied(pool_handle, get_cred_def_request)
     return await ledger.parse_get_cred_def_response(get_cred_def_response)
 
 
