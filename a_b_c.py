@@ -13,9 +13,11 @@ async def ensure_previous_request_applied(pool_handle, checker_request):
         time.sleep(5)
 
 async def get_cred_def(pool_handle, did, cred_def_id):
+    # timestamp = int(time.time())
     get_cred_def_request = await ledger.build_get_cred_def_request(did, cred_def_id)
     get_cred_def_response = await ensure_previous_request_applied(pool_handle, get_cred_def_request)
     return await ledger.parse_get_cred_def_response(get_cred_def_response)
+
 
 
 
@@ -224,16 +226,20 @@ async def main():
     property_cred_offer_object = json.loads(identities[2]['property_cred_offer'])
 
 
+    print("**********************")
+    print(identities[0]['property_cred_def_id'])
+    print("**********************")
+
     identities[2]['property_schema_id'] = property_cred_offer_object['schema_id'] 
     identities[2]['property_cred_def_id'] = property_cred_offer_object['cred_def_id']
 
 
-    # print("#######################")
-    # print(property_cred_offer_object)
-    # print("#######################")
-    # print(identities[2]['property_schema_id'])
-    # print(identities[2]['property_cred_def_id'])
-    # print("#######################")
+    print("#######################")
+    print(property_cred_offer_object)
+    print("#######################")
+    print(identities[2]['property_schema_id'])
+    print(identities[2]['property_cred_def_id'])
+    print("#######################")
 
 
 
