@@ -5,12 +5,20 @@ from indy import pool, wallet, did, ledger, anoncreds
 from indy.error import IndyError, ErrorCode      
 
 
-async def get_cred_def(pool_handle, did, cred_def_id):
-    get_cred_def_request = await ledger.build_get_cred_def_request(did, cred_def_id)
-    get_cred_def_response = await ledger.submit_request(pool_handle, get_cred_def_request)
-    response = await ledger.parse_get_cred_def_response(get_cred_def_response)
-    return response['result']['data']
+async def ensure_previous_request_applied(pool_handle, checker_request):
+    for _ in range(3):
+        response = json.loads(await ledger.submit_request(pool_handle, checker_request))
+        if response.get('op', '') == 'REPLY':
+            return json.dumps(response)
+        time.sleep(5)
 
+async def get_cred_def(pool_handle, did, cred_def_id):
+    # timestamp = int(time.time())
+    get_cred_def_request = await ledger.build_get_cred_def_request(did, cred_def_id)
+    get_cred_def_response = \
+        await ensure_previous_request_applied(pool_handle, get_cred_def_request,
+                                                lambda response: response['result']['data'] is not None)
+    return await ledger.parse_get_cred_def_response(get_cred_def_response)
 
 async def create_wallet(identity):
     print("Creating wallet for identity: {}".format(identity['name']))
@@ -124,6 +132,73 @@ async def register_credential_definition(name, pool_handle, wallet_handle, did, 
     print("\n")
     return cred_def_id, cred_def_json
 
+async def issue_credentials(index, identities, type_, actor_name, pool_handle):
+    print(f"{actor_name} creates {type_} credential offer")
+    identities[index][f'{type_}_cred_offer'] = await anoncreds.issuer_create_credential_offer(identities[index]['wallet_handle'], identities[index][f'{type_}_cred_def_id'])
+    print(f"{actor_name} sends {type_} Credential offer to Rajesh")
+    identities[2][f'{type_}_cred_offer'] = identities[index][f'{type_}_cred_offer']
+    print(f"Rajesh prepares {type_} credential request")
+    cred_offer_object = json.loads(identities[2][f'{type_}_cred_offer'])
+    identities[2][f'{type_}_schema_id'] = cred_offer_object['schema_id']
+    identities[2][f'{type_}_cred_def_id'] = cred_offer_object['cred_def_id']
+
+    print("Rajesh Create and stores master secret in Wallet")
+    identities[2]['master_secret_id'] = await anoncreds.prover_create_master_secret(identities[2]['wallet_handle'], None)
+    print(f"Rajesh gets {type_} credential definition from ledger")
+    #(identities[2][f'{type_}_cred_def_id'], identities[2][f'{type_}_cred_def']) = await get_cred_def (pool_handle, identities[2]['did'], identities[2][f'{type_}_cred_def_id'])
+
+    (identities[2][f'{type_}_cred_def_id'], identities[2][f'{type_}_cred_def']) = (
+        identities[index][f'{type_}_cred_def_id'], identities[index][f'{type_}_cred_def']
+    )
+
+    print(f"Rajesh creates {type_} credential request for {actor_name}")
+    (identities[2][f'{type_}_cred_request'], identities[2][f'{type_}_cred_request_metadata']) = await anoncreds.prover_create_credential_req(
+        identities[2]['wallet_handle'], identities[2]['did'],
+        identities[2][f'{type_}_cred_offer'],
+        identities[2][f'{type_}_cred_def'],
+        identities[2]['master_secret_id']
+    )
+    print(f"Rajesh sends {type_} credential Request to {actor_name}")
+
+    # Over the Network
+    identities[index][f"{type_}_cred_request"] = identities[2][f"{type_}_cred_request"]
+    print(f"{actor_name} issues credential to Rajesh")
+    print(f"{actor_name} creates {type_} credential for Rajesh")
+    if index==0:
+        identities[index][f'rajesh_{type_}_cred_values'] = json.dumps({
+            'owner_first_name': {"raw": "Rajesh", "encoded": "1234567890"},
+            'owner_last_name': {"raw": "Kumar", "encoded": "9876543210"},
+            'address_of_property': {"raw": "Malancha Road, Kharagpur", "encoded": "5678901234"},
+            'residing_since_year': {"raw": "2010", "encoded": "4321098765"},
+            'property_value_estimate': {"raw": "2000000", "encoded": "3456789012"},
+            'relation_to_applicant': {"raw": "Owner", "encoded": "6543210987"}
+        })
+    else:
+        identities[index][f'rajesh_{type_}_cred_values'] = json.dumps({
+            'student_first_name': {"raw": "Rajesh", "encoded": "1234567890"},
+            'student_last_name': {"raw": "Kumar", "encoded": "9876543210"},
+            'degree_name': {"raw": "Pilot Training Programme", "encoded": "5678901234"},
+            'student_since_year': {"raw": "2022", "encoded": "4321098765"},
+            'cgpa': {"raw": "8", "encoded": "3456789012"}
+        })
+    identities[index][f'{type_}_cred'], _, _ = await anoncreds.issuer_create_credential(
+                                                                                        identities[index]['wallet_handle'], identities[index][f'{type_}_cred_offer'],
+                                                                                        identities[index][f'{type_}_cred_request'],
+                                                                                        identities[index][f'rajesh_{type_}_cred_values'], None, None
+                                                                                    )
+    print(f"{actor_name} sends {type_} credential to Rajesh")
+
+    # Over the network
+    identities[2][f'{type_}_cred'] = identities[index][f'{type_}_cred']
+    print(f"Rajesh stores {type_} credential from {actor_name}")
+    identities[2][f'{type_}_cred_def'] = identities[2][f'{type_}_cred_def']
+    await anoncreds.prover_store_credential(identities[2]['wallet_handle'], None, identities[2][f'{type_}_cred_request_metadata'],
+                                            identities[2][f'{type_}_cred'], identities[2][f'{type_}_cred_def'], None)
+
+
+
+
+
 async def main():
     # Part A - Setup Indy Pool
     # part A utilises "setup_indy_pool()", "connect_to_pool()", "configure_steward()", and "register_verinyms()" functions
@@ -201,9 +276,83 @@ async def main():
     identities[0]['property_cred_def_id'], identities[0]['property_cred_def'] = await register_credential_definition("Government", pool_handle, identities[0]['wallet_handle'], identities[0]['did'], identities[0]['property_schema_id'], identities[0]['property_schema_json'], property_details_cred_def, property_details_schema)
     identities[1]['bonafide_cred_def_id'], identities[1]['bonafide_cred_def'] = await register_credential_definition("NAA", pool_handle, identities[1]['wallet_handle'], identities[1]['did'], identities[1]['bonafide_schema_id'], identities[1]['bonafide_schema_json'], bonafide_student_cred_def, bonafide_student_schema)
 
+    # Part C - issuers issue credentials to Rajesh
+    # part C utilises "issue_credentials()" function
+
+    print("\n\t\t\t***** Part-C *****\n\n")
+
+    await issue_credentials(0, identities, "property", "government", pool_handle)
+    print("\n")
+    await issue_credentials(1, identities, "bonafide", "naa", pool_handle)
+
+    # Part D - CBDC Bank requests a “loan_application_proof_request”
+
+    print("\n\t\t\t***** Part-D *****\n\n")
+    
+    proof_request = {
+        'name': 'loan_application_proof_request',
+        'version': '1.0',
+        'requested_attributes': {
+            'attr1_referent': {
+                'name': 'first_name'
+            },
+            'attr2_referent': {
+                'name': 'last_name'
+            },
+            'attr3_referent': {
+                'name': 'degree_name',
+                'restrictions': [{'cred_def_id': identities[1]['bonafide_cred_def_id']}]
+            },
+            'attr4_referent': {
+                'name': 'student_since_year',
+                'restrictions': [{'cred_def_id': identities[1]['bonafide_cred_def_id']}]
+            },
+            'attr5_referent': {
+                'name': 'cgpa',
+                'restrictions': [{'cred_def_id': identities[1]['bonafide_cred_def_id']}]
+            },
+            'attr6_referent': {
+                'name': 'address_of_property',
+                'restrictions': [{'cred_def_id': identities[0]['property_cred_def_id']}]
+            },
+            'attr7_referent': {
+                'name': 'property_value_estimate',
+                'restrictions': [{'cred_def_id': identities[0]['property_cred_def_id']}]
+            },
+            'attr8_referent': {
+                'name': 'residing_since_year',
+                'restrictions': [{'cred_def_id': identities[1]['bonafide_cred_def_id']}]
+            }
+        },
+        'requested_predicates': {
+            'predicate1_referent': {
+                'name': 'student_since_year',
+                'p_type': '>=',
+                'p_value': 2019,
+                'restrictions': [{'cred_def_id': identities[1]['bonafide_cred_def_id']}]
+            },
+            'predicate2_referent': {
+                'name': 'student_since_year',
+                'p_type': '<=',
+                'p_value': 2023,
+                'restrictions': [{'cred_def_id': identities[1]['bonafide_cred_def_id']}]
+            },
+            'predicate3_referent': {
+                'name': 'cgpa',
+                'p_type': '>',
+                'p_value': 6.0,
+                'restrictions': [{'cred_def_id': identities[1]['bonafide_cred_def_id']}]
+            },
+            'predicate4_referent': {
+                'name': 'property_value_estimate',
+                'p_type': '>',
+                'p_value': 800000,
+                'restrictions': [{'cred_def_id': identities[0]['property_cred_def_id']}]
+            }
+        }
+    }
 
 
 if __name__ == '__main__':
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
-
